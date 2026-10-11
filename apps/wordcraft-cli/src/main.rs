@@ -18,6 +18,9 @@ USAGE:
   wordcraft-cli run [--file F | --template T] --cmd 'id={json}' [--cmd …] [--save OUT] [--print]
                     [--author NAME]           run commands headlessly, then save (--author names
                                               who tracked changes and comments are by)
+  wordcraft-cli insights <file> [--json] [--notes]
+                                              readability & writing-quality report (plain
+                                              text or JSON; --notes adds notes/text boxes)
   wordcraft-cli commands [--json]             list every command
   wordcraft-cli parity [--markdown]           feature-catalog parity
   wordcraft-cli mcp [--connect HOST:PORT | --author NAME]
@@ -82,6 +85,10 @@ const RUN_OPTIONS: &[OptionSpec] = &[
     OptionSpec { name: "--scale", takes_value: true },
     OptionSpec { name: "--print", takes_value: false },
     OptionSpec { name: "--author", takes_value: true },
+];
+const INSIGHTS_OPTIONS: &[OptionSpec] = &[
+    OptionSpec { name: "--json", takes_value: false },
+    OptionSpec { name: "--notes", takes_value: false },
 ];
 const COMMANDS_OPTIONS: &[OptionSpec] = &[OptionSpec { name: "--json", takes_value: false }];
 const PARITY_OPTIONS: &[OptionSpec] = &[OptionSpec { name: "--markdown", takes_value: false }];
@@ -185,6 +192,19 @@ fn run(args: &[String]) -> Result<(), String> {
                 };
                 r.map_err(|e| e.to_string())?;
                 eprintln!("wrote {out}");
+            }
+            Ok(())
+        }
+        "insights" => {
+            validate_options("insights", &rest, INSIGHTS_OPTIONS)?;
+            let mut s = open(&pos(0)?)?;
+            let notes = rest.iter().any(|a| a == "--notes");
+            let r = s.run("review.insights", &json!({"includeTextBoxes": notes})).map_err(|e| e.to_string())?;
+            if rest.iter().any(|a| a == "--json") {
+                println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+            } else {
+                let report: wordcraft_insights::InsightsReport = serde_json::from_value(r).unwrap_or_default();
+                print!("{}", wordcraft_insights::report::to_text(&report));
             }
             Ok(())
         }
