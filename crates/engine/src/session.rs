@@ -65,6 +65,9 @@ pub struct ViewState {
     #[serde(default)]
     pub style_inspector: bool,
     pub comments_pane: bool,
+    /// The Writing Insights pane (Review › Proofing): readability report side panel.
+    #[serde(default)]
+    pub insights_pane: bool,
     /// The Clipboard pane (Home › Clipboard): items collected by Copy and Cut.
     #[serde(default)]
     pub clipboard_pane: bool,
@@ -104,6 +107,7 @@ impl Default for ViewState {
             styles_pane: false,
             style_inspector: false,
             comments_pane: false,
+            insights_pane: false,
             clipboard_pane: false,
             multi_page: false,
             fit: String::new(),
