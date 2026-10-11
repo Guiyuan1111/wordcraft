@@ -1064,6 +1064,9 @@ fn review(app: &mut WordApp, ui: &mut Ui) {
             small(ui, app, "thesaurus", Some("Thesaurus"), "Thesaurus", "review.thesaurus", json!({}), false);
             small(ui, app, "wordCount", Some("Word Count"), "Word Count", "ui.dialog", json!({"name": "wordCount"}), false);
         });
+        let shown = app.session.view.insights_pane;
+        big(ui, app, "spelling", "Writing
+Insights", "view.insightsPane", json!({"value": !shown}), false);
     });
     group(ui, "Speech", None, app, |ui, app| {
         big(ui, app, "readAloud", "Read\nAloud", "review.readAloud", json!({}), false);

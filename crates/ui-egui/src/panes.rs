@@ -37,6 +37,13 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             .frame(egui::Frame::NONE.fill(t.panel).inner_margin(10).stroke(Stroke::new(1.0, t.border)))
             .show(ui, |ui| inspector(app, ui));
     }
+    if app.session.view.insights_pane {
+        egui::Panel::right("insights_pane")
+            .default_size(270.0)
+            .resizable(true)
+            .frame(egui::Frame::NONE.fill(t.panel).inner_margin(10).stroke(Stroke::new(1.0, t.border)))
+            .show(ui, |ui| insights(app, ui));
+    }
     if app.session.view.comments_pane {
         egui::Panel::right("comments_pane")
             .default_size(290.0)
@@ -327,6 +334,153 @@ fn comments(app: &mut WordApp, ui: &mut Ui) {
             ui.add_space(6.0);
         }
     });
+}
+
+/// The Writing Insights side panel: a readability report with jump-to-source issue list.
+/// The report JSON comes from the `review.insights` command and is cached on [`WordApp`],
+/// keyed by document revision, so a pure repaint costs nothing.
+fn insights(app: &mut WordApp, ui: &mut Ui) {
+    if header(ui, "Writing Insights") {
+        let _ = app.run("view.insightsPane", json!({"value": false}));
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    // Refresh the cached report when the document changed. `review.insights` is pure, so this
+    // never touches the undo stack.
+    let rev = app.session.rev();
+    if app.insights_cache.as_ref().is_none_or(|(r, _)| *r != rev)
+        && let Ok(report) = app.execute("review.insights", json!({"includeTextBoxes": true}))
+    {
+        app.insights_cache = Some((rev, report));
+    }
+    let Some(report) = app.insights_cache.as_ref().map(|(_, r)| r.clone()) else { return };
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        section(ui, &t, "Document", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (key, caption) in [("words", "Words"), ("characters", "Characters"), ("sentences", "Sentences"), ("paragraphs", "Paragraphs")] {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(report[key].to_string()).font(semibold(16.0)));
+                        ui.label(egui::RichText::new(tl!(caption)).small().weak());
+                    });
+                }
+            });
+            let minutes = report["reading_minutes"].as_f64().unwrap_or(0.0);
+            let speaking = report["speaking_minutes"].as_f64().unwrap_or(0.0);
+            ui.label(egui::RichText::new(tl!("About {minutes} min to read, {speaking} min to read aloud")
+                .replace("{minutes}", &format!("{minutes:.0}"))
+                .replace("{speaking}", &format!("{speaking:.0}")))
+                .small().weak());
+        });
+
+        section(ui, &t, "Readability", |ui| {
+            let flesch = report.get("flesch").filter(|v| !v.is_null());
+            let grade = report.get("grade").filter(|v| !v.is_null());
+            if let Some(f) = flesch {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("Flesch {:.0}", f["score"].as_f64().unwrap_or(0.0))).font(semibold(14.0)));
+                    ui.label(egui::RichText::new(f["label"].as_str().unwrap_or("")).weak());
+                });
+            }
+            if let Some(g) = grade {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("≈ grade {:.0}", g["score"].as_f64().unwrap_or(0.0))).font(semibold(14.0)));
+                    ui.label(egui::RichText::new(g["label"].as_str().unwrap_or("")).weak());
+                });
+            }
+            if flesch.is_none() && grade.is_none() {
+                ui.label(egui::RichText::new(tl!("Not enough text for readability grades.")).weak());
+            }
+            ui.label(egui::RichText::new(format!("avg sentence: {} words / {} chars", fmt_num(&report["avg_sentence_words"]), fmt_num(&report["avg_sentence_chars"])))
+                .small().weak());
+        });
+
+        section(ui, &t, "Sentence length", |ui| {
+            let buckets = report["histogram"].as_array().cloned().unwrap_or_default();
+            let max = buckets.iter().filter_map(|b| b["count"].as_u64()).max().unwrap_or(1).max(1) as f32;
+            let bar_w = (ui.available_width() - 70.0).max(20.0);
+            for b in buckets {
+                let upto = b["upto"].as_u64().unwrap_or(0);
+                let count = b["count"].as_u64().unwrap_or(0);
+                ui.horizontal(|ui| {
+                    let label = if upto >= 50 { "46+".to_string() } else { format!("{}–{}", upto.saturating_sub(4), upto) };
+                    ui.label(egui::RichText::new(label).small().weak().monospace());
+                    let (rect, _) = ui.allocate_exact_size(vec2((bar_w * count as f32 / max).max(2.0), 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, t.accent);
+                    ui.label(egui::RichText::new(count.to_string()).small().weak());
+                });
+            }
+        });
+
+        section(ui, &t, "Longest sentences", |ui| {
+            let list = report["longest_sentences"].as_array().cloned().unwrap_or_default();
+            if list.is_empty() {
+                ui.label(egui::RichText::new(tl!("No sentences yet.")).weak());
+            }
+            for s in list {
+                let snippet = s["snippet"].as_str().unwrap_or("");
+                let mut text = snippet.to_string();
+                if text.chars().count() > 90 {
+                    text = format!("{}…", text.chars().take(89).collect::<String>());
+                }
+                if ui.selectable_label(false, text).clicked() {
+                    let pos = json!({"story": "body", "path": s["path"], "off": s["start"].as_u64().unwrap_or(0)});
+                    let _ = app.run("caret.set", json!({"pos": pos}));
+                }
+            }
+        });
+
+        section(ui, &t, "Top words", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for w in report["top_words"].as_array().cloned().unwrap_or_default() {
+                    ui.label(egui::RichText::new(format!("{} ×{}", w["word"].as_str().unwrap_or(""), w["count"].as_u64().unwrap_or(0))).small().weak());
+                }
+            });
+        });
+
+        section(ui, &t, "Issues", |ui| {
+            let findings = report["findings"].as_array().cloned().unwrap_or_default();
+            if findings.is_empty() {
+                ui.label(egui::RichText::new(tl!("No issues found.")).color(t.green));
+                return;
+            }
+            for (kind, label, color) in [
+                ("longSentence", "Long sentences", t.red),
+                ("passiveVoice", "Passive voice", t.orange),
+                ("wordyPhrase", "Wordy phrases", t.orange),
+                ("fillerAdverb", "Filler adverbs", t.orange),
+                ("repeatedWord", "Repeated words", t.red),
+                ("repeatedStart", "Repeated sentence starts", t.accent),
+            ] {
+                let items: Vec<&Value> = findings.iter().filter(|f| f["kind"].as_str() == Some(kind)).collect();
+                if items.is_empty() {
+                    continue;
+                }
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(format!("{} ({})", tl!(label), items.len())).font(semibold(12.5)).color(color));
+                for f in items {
+                    let mut job = egui::text::LayoutJob::default();
+                    job.append(f["message"].as_str().unwrap_or(""), 0.0, egui::TextFormat {
+                        font_id: regular(12.0),
+                        color: ui.visuals().text_color(),
+                        ..Default::default()
+                    });
+                    job.wrap.max_width = ui.available_width();
+                    // Clicking a finding moves the caret to it (the command attached story+path+off).
+                    if ui.add(egui::Button::new(job).frame(false)).clicked() {
+                        let pos = json!({"story": "body", "path": f["path"], "off": f["start"].as_u64().unwrap_or(0)});
+                        let _ = app.run("caret.set", json!({"pos": pos}));
+                    }
+                }
+            }
+        });
+        ui.add_space(8.0);
+    });
+}
+
+/// `{:.1}` for a JSON number, tolerating missing fields.
+fn fmt_num(v: &Value) -> String {
+    format!("{:.1}", v.as_f64().unwrap_or(0.0))
 }
 
 fn edit_key(id: u32) -> egui::Id {
