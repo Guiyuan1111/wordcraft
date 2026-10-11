@@ -167,6 +167,9 @@ pub struct WordApp {
     pub previews: previews::Previews,
     /// Media key of the picture a pending Change Picture replaces (#147).
     pub change_picture_target: Option<String>,
+    /// Writing Insights pane cache: (document rev, `review.insights` report JSON). Refreshed by
+    /// the pane when the document changes.
+    pub insights_cache: Option<(u64, Value)>,
     /// Web: a recipient list was asked for (Select Recipients › Use an Existing List…), so the
     /// next text file from the picker loads as recipients instead of opening (#240).
     pub recipient_list_pending: bool,
@@ -273,6 +276,7 @@ impl WordApp {
             read_aloud_error: None,
             autosave_path: None,
             change_picture_target: None,
+            insights_cache: None,
             recipient_list_pending: false,
             file_dialog: None,
             info_editing: None,

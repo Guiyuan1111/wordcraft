@@ -22,6 +22,7 @@ ribbon 界面、样式、表格、修订、引用、邮件合并；读写 .docx�
 | L2 | `docx` | ECMA-376 OOXML 读写（含加密、OMML、图表、SmartArt、VBA 保留） | 14,550 |
 | L2 | `docbin` | Word 97-2003 .doc 只读（FIB/piece table/FKP/sprm） | 4,397 |
 | L2 | `formats` | ODT/RTF/HTML/Markdown/LaTeX/TXT，经中间模型 `Flow` 桥接 | 10,707 |
+| L2 | `insights`（F 阶段新增） | 写作洞察：文本统计、六项可读性指标、六类写作问题检测、报告模型 | ~1,400 |
 | L3 | `render` | vello_cpu 光栅化：页面位图、缩略图、暗色反转 | 1,204 |
 | L3 | `pdf` | krilla PDF 导出：子集化字体、可选中文本、链接、大纲、Tagged PDF | 2,125 |
 | — | `metafile` | WMF/EMF → 中立矢量模型（render/pdf 共用） | 2,787 |

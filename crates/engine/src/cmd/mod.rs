@@ -10,6 +10,7 @@ pub mod equation;
 pub mod file;
 pub mod fmt_revisions;
 pub mod format;
+pub mod insights;
 pub mod insert;
 pub mod inspector;
 pub mod lists;
@@ -54,6 +55,7 @@ pub fn registry() -> Registry {
     v.extend(table_style::specs());
     v.extend(table_draw::specs());
     v.extend(review::specs());
+    v.extend(insights::specs());
     v.extend(file::specs());
     v.extend(design::specs());
     v.extend(references::specs());
