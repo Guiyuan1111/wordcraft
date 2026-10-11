@@ -64,8 +64,10 @@ pub fn names_picture_files(text: &str) -> bool {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).peekable();
     lines.peek().is_some()
         && lines.take(MAX_FILES + 1).enumerate().all(|(i, l)| {
-            let path = l.strip_prefix("file://").unwrap_or(l);
-            i < MAX_FILES && (l.starts_with("file://") || Path::new(path).is_absolute()) && is_picture_file(Path::new(path))
+            let path = Path::new(l.strip_prefix("file://").unwrap_or(l));
+            // Root-relative paths (`/tmp/b.JPG`) count too: on Windows `is_absolute` also
+            // demands a drive letter, which a manager-copied Unix path never has.
+            i < MAX_FILES && (l.starts_with("file://") || path.is_absolute() || path.has_root()) && is_picture_file(path)
         })
 }
 
