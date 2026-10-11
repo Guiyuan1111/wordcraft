@@ -340,6 +340,7 @@ enum Cls {
 }
 
 impl Cls {
+    /// 【中文标注】类别 → SPACING 表下标。
     fn idx(self) -> usize {
         self as usize
     }
@@ -427,9 +428,11 @@ impl Bx {
             self.slots.push(sl);
         }
     }
+    /// 【中文标注】登记一个光标槽位（x 处、暂无高度，稍后由 finalize 撑起）。
     fn slot(&mut self, path: &[(usize, usize)], off: usize, x: f32) {
         self.slots.push(Slot { path: path.to_vec(), off, x, y: 0.0, a: 0.0, d: 0.0 });
     }
+    /// 【中文标注】画一个实心矩形并扩张盒子的上/下伸（零宽/零高忽略）。
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Rgb) {
         if w > 0.0 && h > 0.0 {
             self.items.push(MItem::Rect { x, y, w, h, color });
@@ -577,6 +580,7 @@ impl Ctx {
             _ => s2 / 100.0,
         }
     }
+    /// 【中文标注】当前样式层级的字号 = 基准字号 × 层级缩放比例。
     fn size(&self, st: St) -> f32 {
         self.base * self.scale(st.level)
     }
@@ -596,6 +600,7 @@ impl Ctx {
     fn axis(&self, st: St) -> f32 {
         self.k(C::AxisHeight, st)
     }
+    /// 【中文标注】一个 em 的点数（同 size，语义别名）。
     fn em(&self, st: St) -> f32 {
         self.size(st)
     }
@@ -804,6 +809,8 @@ impl Ctx {
 
     /// A text atom with caret slots at its character boundaries (`k0`: the unit offset of its
     /// first character).
+    /// 【中文标注】文本原子：在字形盒基础上按字符边界（cuts）铺光标槽位——每个字符
+    /// 前后各一个落点；k0 是首字符在参数内的单位偏移。
     fn text_atom(&self, face: FaceRef, text: &str, size: f32, level: u8, color: Rgb, synth: (bool, bool), path: &[(usize, usize)], k0: usize) -> Bx {
         let mut b = self.glyphs(face, text, size, level, color, synth);
         let cuts = std::mem::take(&mut b.cuts);
@@ -813,11 +820,22 @@ impl Ctx {
         b
     }
 
+    /// 【中文标注】把一个 MRun 拆成原子序列（RunPart）——原子是字距与结构定位的最小
+    /// 单位。规则：
+    /// - nor（正体文本）：用正文字体排一整个 Ord 原子；
+    /// - 其余逐字符处理：映射数学字母表（math_alnum）并查类别（class_of）；连续的 Ord
+    ///   字符且同字体、同斜体合成一个原子；非 Ord 字符（运算符/关系符/括号/…）自成
+    ///   原子；非字面的 `-`/`*`/`'` 换成数学减号/星号/撇号；
+    /// - `&`（非字面）产生对齐段 Align；空格与函数应用符等不可见字符产出透明原子
+    ///   （不参与字距，但保留光标槽位）。
+    /// 字号取 run 自带 size（滤掉非有限值）否则基准字号，再乘层级缩放。
     fn run_atoms(&self, r: &MRun, st: St, u0: usize, path: &[(usize, usize)]) -> Vec<RunPart> {
         let mut out = Vec::new();
         let size = r.size.filter(|s| s.is_finite()).unwrap_or(self.base).clamp(1.0, 1638.0) * self.scale(st.level);
         let color = r.color.unwrap_or(self.color);
         if r.nor {
+            // 【中文标注】正体文本（m:nor）：用正文字体（字体名恰为 "Cambria Math" 视作
+            // 未指定，退回正文字体）；按 m:sty 决定粗/斜，不再做数学斜体化。
             // Normal text: the text font, upright unless asked.
             let fam = r.font.clone().filter(|f| !f.eq_ignore_ascii_case("Cambria Math")).unwrap_or_else(|| self.text_font.clone());
             let (bold, italic) = match r.sty {
@@ -846,6 +864,8 @@ impl Ctx {
             }
         };
         // A zero-width (or space) atom that takes no part in spacing, with its two slots.
+        // 【中文标注】透明原子工厂：空格/零宽字符专用——不参与原子间字距，前后各留
+        // 一个光标槽位。
         let blank = |w: f32, k: usize| {
             let mut b = Bx { w, transparent: true, ..Default::default() };
             b.slot(path, u0 + k, 0.0);
@@ -870,6 +890,8 @@ impl Ctx {
             };
             let is_letter = c.is_alphabetic();
             let greek_cap = ('\u{391}'..='\u{3A9}').contains(&c);
+            // 【中文标注】样式决定粗/斜；未指定时：拉丁字母默认斜体（数学惯例），大写
+            // 希腊字母（Α..Ω）、函数名（upright）、非 Roman 书体与字面文本不正体化。
             let (bold, italic) = match r.sty {
                 Some(MSty::Plain) => (false, false),
                 Some(MSty::Bold) => (true, false),
@@ -879,6 +901,7 @@ impl Ctx {
             };
             let mapped = math_alnum(c, bold, italic, r.scr);
             // Fall back to the plain letter (slanted) when the face lacks the math alphabet.
+            // 【中文标注】数学字体缺该字母表字形时退回普通字母，用合成斜体替代。
             let (ch, slant) = if mapped != c && !self.face.covers(mapped) { (c, italic) } else { (mapped, false) };
             let face = if self.face.covers(ch) || ch.is_whitespace() {
                 None
@@ -886,6 +909,8 @@ impl Ctx {
                 FontDb::global().fallback_for(ch, self.face.id()).map(|f| FaceRef::of(&f))
             };
             let cls = if r.lit { Cls::Ord } else { class_of(ch) };
+            // 【中文标注】空格与不可见算子（U+2061 函数应用、U+2062 乘、U+2063 点乘、
+            // U+200B 零宽空格）：产出透明原子；手工键入的空格宽约 0.4 em（Word 惯例）。
             if ch == ' ' || ch == '\u{2061}' || ch == '\u{2062}' || ch == '\u{2063}' || ch == '\u{200B}' {
                 flush(&mut cur, cur_k0, cur_face, synth_italic, &mut out);
                 // Word sets a typed space in an equation about 0.4 em wide.
@@ -914,14 +939,23 @@ impl Ctx {
     }
 
     /// N-ary operators and functions: the operator atom (class Op) then the operand.
+    /// 【中文标注】N 元算子（∑ ∫ 等）与函数名：先算子原子（类别 Op）再操作数。
+    /// display 下放大算子：目标高 = DisplayOperatorMinHeight（无表 1.5em），grow 时至少
+    /// 包住操作数；grow 走纵向伸展（尺寸变体/部件拼接），不 grow 时挑最接近 1.2em 的
+    /// 尺寸变体（差距大则缩放近似）。算子居中于数学轴。上下限位置 LimLoc：积分号默认
+    /// 侧旁、其余默认上下；行内一律侧旁。UndOvr 走 limits，SubSup 走 attach_op（下标
+    /// 按斜体修正向左收）。函数名（Func）以 upright 样式排、操作数正常。
     fn op_atoms(&mut self, n: &MNode, st: St, depth: usize) -> Vec<Bx> {
         match n {
             MNode::Nary { chr, lim_loc, grow, sub_hide, sup_hide, sub, sup, e } => {
                 let e = self.sub(2, e, st, depth);
+                // 【中文标注】上下限位置：积分号默认侧旁，其余默认上下限；行内一律侧旁。
                 let loc = lim_loc.unwrap_or(if is_integral(*chr) { LimLoc::SubSup } else { LimLoc::UndOvr });
                 let loc = if st.display { loc } else { LimLoc::SubSup };
                 let size = self.size(st);
                 let base_gid = self.face.glyph_for(*chr);
+                // 【中文标注】目标高：display 读 DisplayOperatorMinHeight；grow 时至少
+                // 包住操作数的上/下伸。
                 let mut target = 0.0f32;
                 if st.display {
                     target = match &self.t {
@@ -936,6 +970,7 @@ impl Ctx {
                     self.stretch_v(base_gid, target, size).unwrap_or_else(|| self.glyph_id(base_gid, size, self.color))
                 } else if target > 0.0 && self.t.is_some() {
                     // Word sets display operators about 1.2 em tall: the size variant nearest that.
+                    // 【中文标注】不伸展时挑 advance 最接近 1.2 em 的尺寸变体。
                     let want = target.min(size * 1.2) * self.upem / size;
                     let (g, adv) = self
                         .t
@@ -945,6 +980,7 @@ impl Ctx {
                         .copied()
                         .unwrap_or((base_gid, want));
                     // A font without a variant near that size: scale the nearest one.
+                    // 【中文标注】最近变体差距仍大时按比例缩放近似（0.9..1.1 视作不缩）。
                     let f = if adv > 0.0 { (want / adv).clamp(0.6, 1.5) } else { 1.0 };
                     let f = if (0.9..=1.1).contains(&f) { 1.0 } else { f };
                     self.glyph_id(g, size * f, self.color)
@@ -955,6 +991,7 @@ impl Ctx {
                     self.glyphs(self.face, &chr.to_string(), s, 0, self.color, (false, false))
                 };
                 // Centre the operator on the math axis.
+                // 【中文标注】算子居中于数学轴。
                 let dy = self.axis(st) - (op.a - op.d) / 2.0;
                 let mut ob = Bx { w: op.w, ..Default::default() };
                 let ic = op.ic;
@@ -981,6 +1018,9 @@ impl Ctx {
 
     /// Limits under and over `base` (centred), spaced as for big operators (`big`) or as
     /// accents-like limits.
+    /// 【中文标注】上下限布局：底居中于最宽者。限的位移取大者——big（大算子）用
+    /// BaselineRiseMin/DropMin 与 GapMin+限对侧伸展的较大者；非 big（lim 等）只用
+    /// GapMin+对侧伸展。斜体修正 ic 对半摊：上限右移 ic/2、下限左移 ic/2（TeX 惯例）。
     fn limits(&self, base: Bx, under: Option<Bx>, over: Option<Bx>, ic: f32, st: St, big: bool) -> Bx {
         let w = base.w.max(under.as_ref().map_or(0.0, |b| b.w)).max(over.as_ref().map_or(0.0, |b| b.w));
         let mut out = Bx { w, ..Default::default() };
@@ -1010,6 +1050,8 @@ impl Ctx {
 
     /// Limits beside a big operator: the superscript at its advance, the subscript tucked left
     /// under the slant by the italic correction.
+    /// 【中文标注】大算子的侧旁上下标：上标接在 advance 之后；下标按斜体修正向左收
+    /// （贴进算子斜出的尾部），下移量按 Subscript 三常数取大；宽度补 SpaceAfterScript。
     fn attach_op(&self, base: Bx, sub: Option<Bx>, sup: Option<Bx>, st: St) -> Bx {
         let ic = base.ic;
         let mut b = base;
@@ -1027,6 +1069,12 @@ impl Ctx {
     }
 
     /// Sub/superscripts after `base`. `char_base`: the base is a single character (no baseline drop).
+    /// 【中文标注】普通上下标：位移按 MATH 表常数取大——上标 u = max(ShiftUp[Cramped],
+    /// 上标底沿 + BottomMin；非单字符底再取 底上伸 − BaselineDropMax)；下标 v =
+    /// max(ShiftDown, 下标顶沿 − TopMax；非单字符底再取 底下伸 + BaselineDropMin)。
+    /// 同时有上下标时保证两者视觉间隙 ≥ SubSuperscriptGapMin：不够先压下标，再在
+    /// BottomMaxWithSubscript 限额内上抬上标补足。char_base（底为单字符，如 x²）不做
+    /// 基线下降。宽度补 SpaceAfterScript（只有底、无上下标时不加）。
     fn attach(&self, base: Bx, sub: Option<Bx>, sup: Option<Bx>, st: St, char_base: bool) -> Bx {
         let (bw, ba, bd, ic) = (base.w, base.a, base.d, base.ic);
         let (first, last) = (base.first, base.last);
@@ -1079,22 +1127,29 @@ impl Ctx {
 
     /// A vertical size variant or assembly of `gid` at least `target` tall (`None` without a
     /// `MATH` table or construction for the glyph).
+    /// 【中文标注】纵向伸展（定界符/根号/大算子）：取至少 target 高的尺寸变体或部件
+    /// 拼接；无 MATH 表或该字形无构造记录时 None，调用方退回原字形。
     fn stretch_v(&self, gid: u32, target: f32, size: f32) -> Option<Bx> {
         let t = self.t.as_ref()?;
         let con = t.vert.get(&gid)?;
         self.stretch(con, t, target, size, true)
     }
 
+    /// 【中文标注】横向伸展（宽重音/组合括号线等）：取至少 target 宽的尺寸变体或拼接。
     fn stretch_h(&self, gid: u32, target: f32, size: f32) -> Option<Bx> {
         let t = self.t.as_ref()?;
         let con = t.horiz.get(&gid)?;
         self.stretch(con, t, target, size, false)
     }
 
+    /// 【中文标注】伸展核心（OpenType MATH 表 MathVariants 的 variants + parts）：先挑
+    /// 尺寸变体，不够再用 GlyphPart 拼接。垂直拼接时部件自下而上堆叠（y = 已排长度 −
+    /// 部件墨迹底，使墨迹连续），总盒 a=总高、d=0；水平拼接从左到右排，总盒 w=总长。
     fn stretch(&self, con: &Construction, t: &MathTable, target: f32, size: f32, vertical: bool) -> Option<Bx> {
         let k = size / self.upem;
         let target_fu = target / k;
         // The first variant big enough.
+        // 【中文标注】优先尺寸变体：取第一个够高/宽（advance ≥ 目标−1）的。
         if let Some((g, _)) = con.variants.iter().find(|(_, adv)| *adv >= target_fu - 1.0) {
             return Some(self.glyph_id(*g, size, self.color));
         }
@@ -1102,6 +1157,8 @@ impl Ctx {
             return con.variants.last().map(|(g, _)| self.glyph_id(*g, size, self.color));
         }
         // Assembly: repeat extenders until the parts span the target.
+        // 【中文标注】部件拼接（GlyphPart）：固定件各 1 个 + 延伸件重复 reps 个，总长
+        // （减去接缝最小重叠 min_connector_overlap）达到目标为止；reps ≤100 防失控。
         let o = t.min_connector_overlap;
         let fixed: f32 = con.parts.iter().filter(|p| !p.extender).map(|p| p.full_advance).sum();
         let ext: f32 = con.parts.iter().filter(|p| p.extender).map(|p| p.full_advance).sum();
@@ -1125,6 +1182,8 @@ impl Ctx {
         let joints = seq.len().saturating_sub(1);
         let max_len: f32 = seq.iter().map(|p| p.full_advance).sum::<f32>() - o * joints as f32;
         // Spread the excess over the joints as extra overlap (within each connector's length).
+        // 【中文标注】reps 拼出的最大长度通常超过目标：超出量均摊到各接缝作额外重叠
+        // （重叠越多总长越短），但不超过相邻两件连接器长度的较小值（room）。
         let excess = (max_len - target_fu).max(0.0);
         let per = if joints > 0 { excess / joints as f32 } else { 0.0 };
         let mut b = Bx::default();
@@ -1162,6 +1221,10 @@ impl Ctx {
 
     /// A delimiter (or separator) glyph covering `a`/`d` around the axis (or the content exactly
     /// with `exact`).
+    /// 【中文标注】定界符：目标高——exact（如 |x| 的竖线）= 内容高 a+d 精确包住；
+    /// 括号类 = 2×max(上伸−轴, 下伸+轴)，即跨数学轴对称伸展。grow=false 直接用原字形；
+    /// 内容只比原字形高 0.02em 以内不折腾；伸展失败退回原字形。定位：exact 按内容
+    /// 垂直居中，否则按数学轴居中。
     fn delimiter(&self, c: char, a: f32, d: f32, st: St, grow: bool, exact: bool) -> Bx {
         let size = self.size(st);
         let axis = self.axis(st);
@@ -1172,6 +1235,7 @@ impl Ctx {
         }
         let target = if exact { a + d } else { 2.0 * (a - axis).max(d + axis) };
         // Small content keeps the plain glyph where it sits.
+        // 【中文标注】内容不高出原字形（0.02em 容差）时保留原字形原位。
         if glyph.a + glyph.d >= target - size * 0.02 {
             return glyph;
         }
@@ -1183,6 +1247,9 @@ impl Ctx {
         out
     }
 
+    /// 【中文标注】单个 MNode 的布局分派：每种结构一个分支，子参数经 sub() 递归
+    /// （depth+1，超 MAX_DEPTH 返回空盒）。结构间距全部读 MATH 表常数（Ctx::k）：
+    /// 分数/根式/上下标/上下限/顶底线/边框/矩阵各有专属常数组。
     fn node(&mut self, n: &MNode, st: St, depth: usize) -> Bx {
         if depth > MAX_DEPTH {
             return Bx::default();
@@ -1203,6 +1270,7 @@ impl Ctx {
             MNode::Frac { kind, num, den } => self.frac(*kind, num, den, st, d),
             MNode::Script { kind, base, sub, sup } => {
                 let b = self.sub(0, base, st, d);
+                // 【中文标注】底恰为单字形（如 x²）时上下标不做基线下降（见 attach）。
                 let char_base = b.glyph.is_some();
                 let sub_b = if matches!(kind, ScriptKind::Sub | ScriptKind::SubSup | ScriptKind::Pre) {
                     Some(self.sub(1, sub, st.script().cramp(), d))
@@ -1216,6 +1284,8 @@ impl Ctx {
                 };
                 if *kind == ScriptKind::Pre {
                     // Pre-scripts: attach to an empty base, then put the base after them.
+                    // 【中文标注】前置上下标（ⁿPᵣ 型）：先在空底上排上下标，再把真正的底
+                    // 接在其后；首末类别沿用底的（整体仍当一个“底”参与字距）。
                     let empty = Bx::default();
                     let mut pre = self.attach(empty, sub_b, sup_b, st, false);
                     let pw = pre.w;
@@ -1233,6 +1303,8 @@ impl Ctx {
                 let atoms = self.op_atoms(n, st, d);
                 compose(atoms, st, em)
             }
+            // 【中文标注】定界符组：上/下伸取各部件最大值，grow 时首/尾/分隔符随之伸展；
+            // 内部不加原子间字距（hcat）；盒子首末类别按有无首/尾括号设定。
             MNode::Delim { beg, end, sep, grow, shp_match, elems } => {
                 let parts: Vec<Bx> = elems.iter().enumerate().map(|(k, e)| self.sub(k, e, st, d)).collect();
                 let a = parts.iter().map(|b| b.a).fold(0.0f32, f32::max);
@@ -1259,6 +1331,8 @@ impl Ctx {
                 out.last = if end.is_some() { Cls::Close } else { Cls::Inner };
                 out
             }
+            // 【中文标注】极限（lim 的上下限）：底正常排，限取 script 层级且不正体；
+            // 在下方时用紧缩样式（cramp）；upper 决定摆上方还是下方。
             MNode::Lim { upper, e, lim } => {
                 let base = self.sub(0, e, st, d);
                 let ls = St { upright: false, ..st.script() };
@@ -1271,6 +1345,9 @@ impl Ctx {
                 out
             }
             MNode::Acc { chr, e } => self.accent(*chr, e, st, d),
+            // 【中文标注】顶/底线（overline/underline）：内容上（下）方留 Overbar/
+            // UnderbarVerticalGap 后画一条规则线（线粗常数，≥0.4pt），并计入
+            // ExtraAscender/ExtraDescender。
             MNode::Bar { top, e } => {
                 let b = self.sub(0, e, st, d);
                 let (w, a, dd) = (b.w, b.a, b.d);
@@ -1290,6 +1367,8 @@ impl Ctx {
                 }
                 out
             }
+            // 【中文标注】边框盒：内边距 0.12em，线粗取分式线常数（≥0.4pt）；hide 逐边
+            // 隐藏（上/下/左/右）；strike 为四种删除线——水平/垂直/左下→右上/左上→右下。
             MNode::BorderBox { hide, strike, e } => {
                 let b = self.sub(0, e, st, d);
                 let t = self.k(C::FractionRuleThickness, st).max(0.4);
@@ -1334,6 +1413,8 @@ impl Ctx {
                 out
             }
             MNode::Boxed { e } => self.sub(0, e, st, d),
+            // 【中文标注】组合符（底上/下方的花括号、箭头等）：符号横向伸展铺满底宽，
+            // 按 StretchStackGapAbove/BelowMin 摆在底上方或下方，两者整体居中。
             MNode::GroupChr { chr, top, e } => {
                 let b = self.sub(0, e, st, d);
                 let size = self.size(st);
@@ -1356,6 +1437,7 @@ impl Ctx {
             }
             MNode::EqArr { rows } => self.eq_arr(rows, st, d),
             MNode::Matrix { rows, col_jc } => self.matrix(rows, col_jc, st, d),
+            // 【中文标注】幻影（Phantom）：保留占位但可分别隐藏墨迹/宽度/上伸/下伸。
             MNode::Phant { show, zero_wid, zero_asc, zero_desc, e } => {
                 let mut b = self.sub(0, e, st, d);
                 if !show {
@@ -1376,6 +1458,14 @@ impl Ctx {
         }
     }
 
+    /// 【中文标注】分数三种形态：
+    /// - Linear 线性：分子/斜杠/分母一行，均用当前层级字号；
+    /// - Skewed 斜式：分子抬到数学轴上方、分母压到下方（SkewedFraction 常数），中间放
+    ///   分数斜杠 U+2044，左右各留 HorizontalGap/2；
+    /// - Bar/NoBar 堆叠式：分子保持外层 cramped、分母一律紧缩；Bar 时位移 = max(位移
+    ///   常数, 线半粗 ± 数学轴 + 对侧伸展 + 分式线间隙常数)（display 与行内读不同的
+    ///   Display/普通常数组）；NoBar 用 Stack 常数、间隙不足时上下各让一半。盒宽 =
+    ///   最宽者 + 2×0.08em 内边距；分式线画在数学轴上（厚 max(RuleThickness, 0.4pt)）。
     fn frac(&mut self, kind: FracKind, num: &[MNode], den: &[MNode], st: St, d: usize) -> Bx {
         let em = self.em(st);
         match kind {
@@ -1401,11 +1491,15 @@ impl Ctx {
             }
             FracKind::Bar | FracKind::NoBar => {
                 let cs = st.frac();
+                // 【中文标注】分子保持外层的 cramped；分母一律紧缩（TeX 惯例）。
                 let n = self.sub(0, num, St { cramped: st.cramped, ..cs }, d);
                 let dn = self.sub(1, den, cs.cramp(), d);
                 let axis = self.axis(st);
                 let (u, v) = if kind == FracKind::Bar {
                     let t = self.k(C::FractionRuleThickness, st);
+                    // 【中文标注】分子上移 u / 分母下移 v：位移常数与“线半粗 ± 数学轴 +
+                    // 对侧伸展 + 分式线间隙常数”取大（间隙不小于 MATH 表常数）；display
+                    // 与行内读不同的常数组。
                     let (su, sd, gn, gd) = if st.display {
                         (
                             self.k(C::FractionNumeratorDisplayStyleShiftUp, st),
@@ -1423,6 +1517,8 @@ impl Ctx {
                     };
                     (su.max(gn + t / 2.0 + axis + n.d), sd.max(gd + t / 2.0 - axis + dn.a))
                 } else {
+                    // 【中文标注】无横线（Stack）：上下位移用 Stack 常数组；实际间隙不足
+                    // 时上下各让一半补足。
                     let (mut su, mut sd, gap) = if st.display {
                         (
                             self.k(C::StackTopDisplayStyleShiftUp, st),
@@ -1454,6 +1550,12 @@ impl Ctx {
         }
     }
 
+    /// 【中文标注】根式：被开方数用紧缩样式；目标高 = 被开方数高 + 根式垂直间隙
+    /// （display 读 RadicalDisplayStyleVerticalGap）+ 线粗；√ 号纵向伸展到目标（失败
+    /// 退回原字形），多余高度摊回间隙（extra/2），使横杠恰好贴着被开方数顶；横杠为
+    /// 矩形（厚 max(RuleThickness, 0.4pt)）。次数按 level+2 的紧缩样式排，以
+    /// RadicalDegreeBottomRaisePercent 抬到 √ 的弯钩处，前后按 RadicalKernBefore/
+    /// AfterDegree 收放（After 为负，把 √ 往左拉）；上伸另计 RadicalExtraAscender。
     fn radical(&mut self, deg: &[MNode], deg_hide: bool, e: &[MNode], st: St, d: usize) -> Bx {
         let b = self.sub(1, e, st.cramp(), d);
         let size = self.size(st);
@@ -1471,18 +1573,22 @@ impl Ctx {
             gap += extra / 2.0;
         }
         // The sign's top meets the rule over the base.
+        // 【中文标注】√ 顶对齐横杠顶：dy = 横杠顶 − √ 的上伸。
         let top = b.a + gap + t;
         let dy = top - g.a;
         let (ga, gd, gw) = (g.a, g.d, g.w);
         let mut sign = Bx { w: gw, ..Default::default() };
         sign.put(g, 0.0, dy);
         // Degree.
+        // 【中文标注】次数（ⁿ√ 的 n）：抬高到弯钩处，前后按 Kern 常数收放。
         let mut x0 = 0.0f32;
         let mut out = Bx::default();
         if !deg_hide {
             let db = self.sub(0, deg, St { level: (st.level + 2).min(2), display: false, cramped: true, upright: st.upright }, d);
             let kb = self.k(C::RadicalKernBeforeDegree, st);
             let ka = self.k(C::RadicalKernAfterDegree, st);
+            // 【中文标注】次数抬升比例 RadicalDegreeBottomRaisePercent；无 MATH 表时
+            // 取 60% 兜底（Cambria Math 的实际值附近）。
             let raise = self.t.as_ref().map_or(60.0, |t| t.radical_degree_bottom_raise_percent) / 100.0 * (ga + gd);
             let y = (dy - gd) + raise;
             let dw = db.w;
@@ -1498,11 +1604,17 @@ impl Ctx {
         out
     }
 
+    /// 【中文标注】重音（帽子/箭头/划线等）：划线类（U+0305、¯、U+0304、‾）直接画
+    /// Overbar 矩形；宽重音（wide_accent）且底足够宽时横向伸展铺满底，否则单字形。
+    /// 水平对位：底的单字符附着点对准重音自身的 TopAccentAttachments 点（无表取墨迹
+    /// 中点）；负偏移且重音比底宽时改为居中。垂直：底高于 AccentBaseHeight（x 字高）
+    /// 时把重音抬起。完成后清除单字符记录（带重音的整体不再当单字符底），保留斜体修正。
     fn accent(&mut self, chr: char, e: &[MNode], st: St, d: usize) -> Bx {
         let b = self.sub(0, e, st.cramp(), d);
         let size = self.size(st);
         let color = self.color;
         // Overline-style accents are rules.
+        // 【中文标注】划线类重音退化为顶线矩形（同 Bar top 的画法）。
         if matches!(chr, '\u{305}' | '\u{AF}' | '\u{304}' | '\u{203E}') {
             let (w, a) = (b.w, b.a);
             let mut out = Bx { w, ..Default::default() };
@@ -1517,6 +1629,8 @@ impl Ctx {
         }
         let gid = self.face.glyph_for(chr);
         // Combining marks have no advance: compare the base with the accent's ink.
+        // 【中文标注】组合符号无步进宽度：用墨迹宽判断底是否“窄”（≤1.2× 重音墨迹），
+        // 窄底不做宽重音伸展。
         let ink = glyph_bounds(&self.face, gid).map(|(x0, _, x1, _)| (x1 - x0) * size / self.upem).unwrap_or(0.0);
         let narrow = gid != 0 && b.w <= ink * 1.2;
         let mut acc = if wide_accent(chr) && gid != 0 && !narrow {
@@ -1528,6 +1642,7 @@ impl Ctx {
         };
         acc.glyph = None;
         // Horizontal: the base's attachment point under the accent's.
+        // 【中文标注】水平对位：x = 底附着点 − 重音附着点。
         let base_x = b.glyph.map(|(_, _, ax)| ax).unwrap_or(b.w / 2.0);
         let acc_x = {
             let single = acc.items.first().and_then(|it| match it {
@@ -1544,6 +1659,7 @@ impl Ctx {
             }
         };
         // Vertical: accents sit on an x-height base; taller bases push them up.
+        // 【中文标注】垂直定位：重音按 AccentBaseHeight（x 字高）摆，更高的底把它抬起。
         let abh = self.k(C::AccentBaseHeight, st);
         let raise = (b.a - abh).max(0.0);
         let (f, l, w, ic) = (b.first, b.last, b.w, b.ic);
@@ -1564,7 +1680,11 @@ impl Ctx {
 
     /// Rows stacked and centred on the math axis; `gap`: least space between rows, `min_skip`:
     /// least baseline-to-baseline distance.
+    /// 【中文标注】多行堆叠（方程组/矩阵公用）：第 n 行基线 = 上一行基线 − max(上一行
+    /// 下伸 + gap + 本行上伸, min_skip)；整体沿数学轴垂直居中。返回 (总盒, 各行基线)，
+    /// 基线表供 numbered 把编号对齐到各行。
     fn stack_rows(&self, rows: Vec<(Bx, f32)>, st: St, gap: f32, min_skip: f32) -> (Bx, Vec<f32>) {
+        // 【中文标注】自上而下累计各行基线 y（向下为负）。
         // (row box, x) → baselines going down.
         let mut ys = Vec::with_capacity(rows.len());
         let mut y = 0.0f32;
@@ -1579,6 +1699,7 @@ impl Ctx {
         let top = rows.first().map_or(0.0, |(b, _)| b.a);
         let bottom = rows.last().map_or(0.0, |(b, _)| b.d) - ys.last().copied().unwrap_or(0.0);
         // Centre on the axis.
+        // 【中文标注】整体平移：数学轴对准内容块的垂直中点。
         let shift = self.axis(st) + (bottom - top) / 2.0;
         let mut out = Bx::default();
         let mut bases = Vec::with_capacity(ys.len());
@@ -1590,15 +1711,22 @@ impl Ctx {
         (out, bases)
     }
 
+    /// 【中文标注】方程组（无编号路径）：只取行布局，丢弃基线表。
     fn eq_arr(&mut self, rows: &[Arg], st: St, d: usize) -> Bx {
         self.eq_rows(rows, st, d).0
     }
 
     /// Equation-array rows aligned at `&`, and each row's baseline.
+    /// 【中文标注】方程组按 & 对齐：每行拆成对齐段（row() 里按 & 分段，≤64 段、≤1000
+    /// 行）；原子前的字距并入段盒（列宽计算含字距）；列宽 = 各行同段最大宽；摆放为
+    /// “偶数段（= 左列）右对齐、奇数段左对齐”（等号上下对齐的 Word/TeX 惯例），无 &
+    /// 的行与第一列右缘对齐，单列时整组水平居中。行距经 stack_rows（gap=0.1em，最小
+    /// 基线距 1.1em）。返回 (总盒, 各行基线)。
     fn eq_rows(&mut self, rows: &[Arg], st: St, d: usize) -> (Bx, Vec<f32>) {
         let em = self.em(st);
         let me = self.node_stack.last().copied().unwrap_or(0);
         // Each row: segments split at `&`.
+        // 【中文标注】逐行：光标路径压入行号后拆 & 段并计算段前字距。
         let mut segs_rows: Vec<Vec<Bx>> = Vec::new();
         let mut row_paths = Vec::new();
         for (ri, r) in rows.iter().take(1000).enumerate() {
@@ -1612,6 +1740,7 @@ impl Ctx {
             let mut segs: Vec<Vec<Bx>> = vec![Vec::new(); n];
             for (i, (mut b, s)) in atoms.into_iter().enumerate() {
                 // Keep the spacing before an atom with the atom.
+                // 【中文标注】把原子前的字距包进原子盒——列对齐时字距跟着原子走。
                 let g = gaps.get(i).copied().unwrap_or(0.0);
                 if g > 0.0 {
                     let mut wrapped = Bx { w: g + b.w, a: b.a, d: b.d, first: b.first, last: b.last, ..Default::default() };
@@ -1646,8 +1775,10 @@ impl Ctx {
                     0.0
                 } else if single {
                     // A row without `&` aligns with the first column's right edge.
+                    // 【中文标注】无 & 的行与第一列（等号左列）右缘对齐。
                     cw - bw
                 } else if i % 2 == 0 {
+                    // 【中文标注】偶数段 = 等号左列：右对齐。
                     cw - bw
                 } else {
                     0.0
@@ -1667,6 +1798,10 @@ impl Ctx {
 
     /// A display equation with numbers (`#`): the equation centred on the line, each row's
     /// number at the right margin. Automatic numbers (`#` alone) count up from `counter`.
+    /// 【中文标注】带编号的 display 公式：每行按顶层 # 切成 (公式, 编号)（split_number）。
+    /// 编号为空 = 自动编号：counter 自增生成 "(n)"（Plain 正体；每个带 # 的行都消耗一个
+    /// 编号，光标槽位只留编号前一位）；非空则排用户编号。公式整体居中；居中后放不下
+    /// “公式 + 1em + 编号”时改左对齐让位；编号贴行右缘、与各行基线平齐；盒宽补足整行。
     fn numbered(&mut self, rows: &[Arg], st: St, avail: f32, counter: &mut u32) -> Bx {
         let em = self.em(st);
         let parts: Vec<(Arg, Arg, usize)> =
@@ -1675,6 +1810,7 @@ impl Ctx {
         let eq_rows: Vec<Arg> = parts.iter().map(|(e, _, _)| e.clone()).collect();
         let (eq, bases) = self.eq_rows(&eq_rows, st, 1);
         // Numbers.
+        // 【中文标注】逐行排编号。
         let mut nums = Vec::new();
         for (ri, (_, num, hash)) in parts.iter().enumerate() {
             if *hash == usize::MAX {
@@ -1684,6 +1820,7 @@ impl Ctx {
             self.path.push((0, ri));
             let path = self.path.clone();
             // Every numbered equation counts; `#` alone shows the count.
+            // 【中文标注】每个带 # 的行都推进文档级计数器；# 后为空时显示该计数。
             *counter = counter.saturating_add(1);
             let b = if num.is_empty() {
                 let r = MRun { text: format!("({counter})"), sty: Some(MSty::Plain), ..Default::default() };
@@ -1714,6 +1851,7 @@ impl Ctx {
         self.node_stack.pop();
         let num_w = nums.iter().flatten().map(|b| b.w).fold(0.0f32, f32::max);
         let gap = em;
+        // 【中文标注】公式默认居中；居中后放不下“公式+1em 间距+编号”时改为左对齐。
         let mut x_eq = ((avail - eq.w) / 2.0).max(0.0);
         if x_eq + eq.w + gap + num_w > avail {
             x_eq = (avail - num_w - gap - eq.w).max(0.0);
@@ -1736,6 +1874,12 @@ impl Ctx {
     /// says; lines are filled greedily and a term wider than the line overflows it. The first line
     /// starts at the left; the rest are indented by `m:wrapIndent`, set flush right with
     /// `m:wrapRight`, or aligned at an operator of the first line (`m:alnAt`).
+    /// 【中文标注】display 长公式折行：只在顶层二元运算/关系符处可断（绝不进入分数/
+    /// 根式/上下标/矩阵内部）；断点在算子前还是后由 brk_bin 决定；Repeat 时算子在下一
+    /// 行开头重复（字符按 brk_bin_sub 变换：−−/−+/+−）；只有手动断行（m:brk）或超宽才
+    /// 分多行；贪婪装填，单个超宽项允许溢出行宽。首行贴左，后续行按 wrapIndent 缩进
+    /// （≤半行宽）/ wrapRight 右对齐 / m:alnAt 对齐首行第 alnAt 个算子的 x。行距
+    /// gap=0.2em、最小基线距 1.25em，自首行基线向下堆叠。
     fn wrapped(&mut self, a: &[MNode], st: St, avail: f32, mp: &MathProps) -> Bx {
         let em = self.em(st);
         let atoms: Vec<Bx> = self.row(a, st, 0, 0).into_iter().map(|(b, _)| b).collect();
@@ -1755,6 +1899,8 @@ impl Ctx {
         };
         // Chunk starts (after the first): the atom index → forced (`Some(alnAt)`) and the
         // operator repeated at the start of the line it begins.
+        // 【中文标注】候选断点：顶层 Bin/Rel 单字符算子（brk_bin≠Before 时断点在算子后
+        // i+1，否则在算子前 i）；值 = (手动 alnAt, 需在下行重复的算子下标)。
         let mut starts: std::collections::BTreeMap<usize, (Option<u8>, Option<usize>)> = std::collections::BTreeMap::new();
         for i in 1..n {
             let op = is_op(i);
@@ -1775,6 +1921,7 @@ impl Ctx {
             }
         }
         // Chunks: [s, e) with their width inside and the gap before them.
+        // 【中文标注】按断点把原子序列切块 [s,e)；贪心装填以块为单位（块内永不断开）。
         let mut bounds: Vec<usize> = vec![0];
         bounds.extend(starts.keys().copied());
         bounds.push(n);
@@ -1783,6 +1930,8 @@ impl Ctx {
         };
         // The operator glyphs a repeated operator shows at the end of one line and the start of
         // the next.
+        // 【中文标注】重复算子对：(上行尾字形, 下行首字形)——字符按 brk_bin_sub 变换
+        // （−−/−+/+−），字形沿用原算子的字体/字号/颜色。
         let repeats: std::collections::HashMap<usize, (Option<Bx>, Bx)> = starts
             .values()
             .filter_map(|v| v.1)
@@ -1803,6 +1952,8 @@ impl Ctx {
             .collect();
         let indent = if mp.wrap_indent.is_finite() { mp.wrap_indent.clamp(0.0, 1584.0) } else { 0.0 }.min(avail * 0.5);
         // Greedy fill: lines as lists of chunks (index into `bounds`).
+        // 【中文标注】贪心装填：装得下并入当前行，装不下开新行；手动断点强制换行。
+        // 首两行或右对齐模式用整行宽，其余行扣除缩进。
         let mut lines: Vec<(usize, usize)> = Vec::new();
         let mut cur_w = 0.0f32;
         let mut auto = false;
@@ -1830,6 +1981,8 @@ impl Ctx {
             }
         }
         // Build each line's box.
+        // 【中文标注】逐行造盒：先放下行将重复的算子（若本行尾需要“收尾字形”，在此行
+        // 摆放的就是换形后的算子），再依块内顺序放入原子；记录首行算子 x 供 alnAt 对齐。
         let ops: Vec<bool> = (0..n).map(is_op).collect();
         let path = self.path.clone();
         let mut atoms: Vec<Option<Bx>> = atoms.into_iter().map(Some).collect();
@@ -1853,6 +2006,8 @@ impl Ctx {
                 if i > s || has_copy {
                     x += gaps.get(i).copied().unwrap_or(0.0);
                 }
+                // 【中文标注】下一行将以重复算子 i 开头 ⇒ 本行的这个算子画成“收尾字形”
+                // （如 −），其光标槽位按新旧宽度比例缩放。
                 if next == Some(i)
                     && let Some((Some(end), _)) = repeats.get(&i)
                 {
@@ -1867,6 +2022,7 @@ impl Ctx {
                         .collect();
                     b = r;
                 }
+                // 【中文标注】记录首行各算子的 x（m:alnAt 对齐目标）。
                 if li == 0 && ops.get(i).copied().unwrap_or(false) {
                     ops_x.push(x);
                 }
@@ -1881,6 +2037,8 @@ impl Ctx {
         let widest = boxes.iter().map(|(b, _)| b.w).fold(0.0f32, f32::max);
         let right = if auto { avail.max(widest) } else { widest };
         let mut placed = Vec::with_capacity(boxes.len());
+        // 【中文标注】行定位：首行贴左；后续行优先 m:alnAt（对齐首行算子的 x），否则
+        // wrapRight 右对齐，否则缩进 wrapIndent。
         for (li, (b, aln)) in boxes.into_iter().enumerate() {
             let x = if li == 0 {
                 0.0
@@ -1894,6 +2052,7 @@ impl Ctx {
             placed.push((b, x));
         }
         // Stack the lines down from the first one's baseline.
+        // 【中文标注】行堆叠：自首行基线向下（gap=0.2em，最小基线距 1.25em）。
         let (gap, skip) = (em * 0.2, em * 1.25);
         let mut out = Bx::default();
         let mut y = 0.0f32;
@@ -1912,6 +2071,8 @@ impl Ctx {
 
     /// Operator `c` drawn like the operator atom `like` (its face, size and colour), without
     /// caret slots.
+    /// 【中文标注】用 like 原子的字体/字号/颜色/样式画算子字符 c（折行处的重复算子用），
+    /// 无光标槽位（cuts 清空）；like 的字体盖不住 c 时退回数学字体。
     fn op_glyph(&self, like: &Bx, c: char, st: St) -> Option<Bx> {
         let MItem::Glyphs { face, size, color, synth_bold, synth_italic, .. } = like.items.iter().find(|i| matches!(i, MItem::Glyphs { .. }))? else {
             return None;
@@ -1922,6 +2083,10 @@ impl Ctx {
         Some(b.cls(like.first))
     }
 
+    /// 【中文标注】矩阵：单元格按“扁平序号”作子参数编号（跨行连续，光标路径用）；
+    /// 行数 ≤1000、每行 ≤64 列；列宽 = 各列最宽单元格，列间 0.8em；列对齐按 col_jc
+    /// （居中/左/右）；行距经 stack_rows（gap=0.25em，最小基线距 1.2em）；盒宽 =
+    /// 列宽和 + 列间距×(列数−1)。
     fn matrix(&mut self, rows: &[Vec<Arg>], col_jc: &[ColJc], st: St, d: usize) -> Bx {
         let em = self.em(st);
         let mut cells: Vec<Vec<Bx>> = Vec::new();
@@ -1971,6 +2136,8 @@ impl Ctx {
 }
 
 /// The character an operator atom draws.
+/// 【中文标注】算子原子画的那个字符（仅当其文本恰为单字符时 Some）——判断折行断点
+/// 算子与生成重复字形时用。
 fn op_char(b: &Bx) -> Option<char> {
     b.items.iter().find_map(|i| match i {
         MItem::Glyphs { text, .. } => {
@@ -1982,13 +2149,18 @@ fn op_char(b: &Bx) -> Option<char> {
     })
 }
 
+/// 【中文标注】run 拆分产物：普通原子，或 & 对齐标记（零宽透明原子，携带其前后光标
+/// 槽位；eq_rows 按它分段对齐）。
 enum RunPart {
     Atom(Bx),
     /// An `&` alignment mark (a zero-width atom holding its caret slots).
+    /// 【中文标注】& 对齐标记。
     Align(Bx),
 }
 
 /// Give the caret slots of argument `path` in `b` the argument's height.
+/// 【中文标注】参数收尾：把 path 参数内尚无高度的光标槽位撑到参数高度（上 ≥0.72em、
+/// 下 ≥0.22em 兜底）——a = 高度 − 槽位 y、d = 深度 + 槽位 y，保证光标上下沿覆盖参数。
 fn finalize(b: &mut Bx, path: &[(usize, usize)], em: f32) {
     let (a, d) = (b.a.max(em * 0.72), b.d.max(em * 0.22));
     for s in &mut b.slots {
@@ -2002,6 +2174,9 @@ fn finalize(b: &mut Bx, path: &[(usize, usize)], em: f32) {
 /// Spacing before each atom (TeX rules: a binary operator after nothing, an operator, a
 /// relation, an opening bracket or punctuation is ordinary, as is one before a relation,
 /// closing bracket or punctuation).
+/// 【中文标注】每个原子前的字距：查 SPACING 表（左原子末类别 × 右原子首类别），
+/// mu × em/18 换算成点；透明原子（空格等）跳过，不产生字距；Bin 的一元化降级在
+/// classes 里做。
 fn gaps_between(atoms: &[Bx], st: St, em: f32) -> Vec<f32> {
     let cls = classes(atoms);
     let solid: Vec<usize> = (0..atoms.len()).filter(|i| atoms.get(*i).is_some_and(|b| !b.transparent)).collect();
@@ -2018,6 +2193,8 @@ fn gaps_between(atoms: &[Bx], st: St, em: f32) -> Vec<f32> {
 
 /// Each atom's classes (first, last) in context: a binary operator where TeX makes it ordinary
 /// (a unary minus) becomes ordinary.
+/// 【中文标注】各原子的 (首类别, 末类别)：TeX 一元化规则——Bin 前接行首/Bin/Op/Rel/
+/// Open/Punct，或后接行尾/Rel/Close/Punct 时降级为 Ord（一元负号 −x 由此不加字距）。
 fn classes(atoms: &[Bx]) -> Vec<(Cls, Cls)> {
     let mut cls: Vec<(Cls, Cls)> = atoms.iter().map(|b| (b.first, b.last)).collect();
     let solid: Vec<usize> = (0..atoms.len()).filter(|i| atoms.get(*i).is_some_and(|b| !b.transparent)).collect();
@@ -2043,6 +2220,8 @@ fn classes(atoms: &[Bx]) -> Vec<(Cls, Cls)> {
 }
 
 /// Atoms side by side with inter-atom spacing.
+/// 【中文标注】原子横排并逐个加字距（单原子直接返回）；盒子首末类别取两端非透明
+/// 原子、斜体修正取末原子——参数整体对外等价于一个原子参与外层字距。
 fn compose(mut atoms: Vec<Bx>, st: St, em: f32) -> Bx {
     if atoms.len() == 1
         && let Some(b) = atoms.pop()
@@ -2069,6 +2248,7 @@ fn compose(mut atoms: Vec<Bx>, st: St, em: f32) -> Bx {
 }
 
 /// Boxes side by side, no spacing.
+/// 【中文标注】纯横排不加字距（定界符组内部、线性分数等）。
 fn hcat(parts: Vec<Bx>) -> Bx {
     let first = parts.first().map(|b| b.first).unwrap_or_default();
     let last = parts.last().map(|b| b.last).unwrap_or_default();
@@ -2087,6 +2267,9 @@ fn hcat(parts: Vec<Bx>) -> Bx {
 
 #[cfg(test)]
 mod tests {
+    // 【中文标注】排版结果断言：长公式折行与手动断行、短公式不折、分数堆叠、上下标
+    // 升级缩放、原子字距与一元负号、display 大算子上下限、定界符伸展、各结构健康性、
+    // 光标槽位完备性（含命中测试）、自动编号、敌意输入不 panic。
     use super::*;
     use wordcraft_doc::math::Math;
 
