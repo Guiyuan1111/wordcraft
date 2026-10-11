@@ -22,6 +22,7 @@ wordcraft-formats = { path = "crates/formats" }
 wordcraft-render = { path = "crates/render" }
 wordcraft-pdf = { path = "crates/pdf" }
 wordcraft-proof = { path = "crates/proof" }
+wordcraft-insights = { path = "crates/insights" }
 wordcraft-engine = { path = "crates/engine" }
 wordcraft-mcp = { path = "crates/mcp" }
 wordcraft-zotero = { path = "crates/zotero" }

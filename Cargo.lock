@@ -5024,6 +5024,7 @@ dependencies = [
  "serde_json",
  "wordcraft-doc",
  "wordcraft-engine",
+ "wordcraft-insights",
  "wordcraft-mcp",
  "wordcraft-render",
  "wordcraft-zotero",
@@ -5098,6 +5099,7 @@ dependencies = [
  "wordcraft-fonts",
  "wordcraft-formats",
  "wordcraft-geom",
+ "wordcraft-insights",
  "wordcraft-layout",
  "wordcraft-pdf",
  "wordcraft-proof",
@@ -5135,6 +5137,15 @@ name = "wordcraft-geom"
 version = "0.5.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "wordcraft-insights"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wordcraft-doc",
 ]
 
 [[package]]
