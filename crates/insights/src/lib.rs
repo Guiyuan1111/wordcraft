@@ -22,6 +22,8 @@ pub mod metrics;
 pub mod report;
 pub mod stats;
 
+pub use report::{Headline, InsightsReport};
+
 use wordcraft_doc::{Block, Blocks, Document, StoryRef};
 
 /// Options for [`analyze_document`].

@@ -9,7 +9,7 @@
 use crate::stats::TextStats;
 
 /// Every readability score of one text, plus the aggregate grade label.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Readability {
     /// Flesch Reading Ease, 0–100 (higher = easier).
     pub flesch: Option<f32>,
@@ -27,7 +27,7 @@ pub struct Readability {
 
 /// Ratio of tokens that are CJK: above [`CJK_DOMINANT`] the document reads as Chinese/Japanese,
 /// below [`LATIN_DOMINANT`] as Latin script, between as mixed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Script {
     #[default]

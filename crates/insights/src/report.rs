@@ -21,7 +21,7 @@ pub struct ParaText {
 }
 
 /// Where a flagged sentence lives, for jump-to-text in the UI.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SentenceRef {
     /// Body block path of the paragraph holding the sentence.
     pub path: Vec<u32>,
@@ -34,14 +34,14 @@ pub struct SentenceRef {
 }
 
 /// A content word and how often it appears (stop words excluded).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WordFreq {
     pub word: String,
     pub count: usize,
 }
 
 /// One bucket of the sentence-length histogram.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bucket {
     /// Upper bound in words (`5`, `10`, … `45`, the last bucket is "46+").
     pub upto: u32,
@@ -50,14 +50,14 @@ pub struct Bucket {
 
 /// A pre-rendered headline: a number plus its plain-language band, so the UI panel stays
 /// "dumb" — it reads JSON and never links this crate.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Headline {
     pub score: f32,
     pub label: String,
 }
 
 /// The full analysis of one document or text.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InsightsReport {
     /// Latin/numeric words plus CJK characters — the "words" a word count shows.
     pub words: usize,

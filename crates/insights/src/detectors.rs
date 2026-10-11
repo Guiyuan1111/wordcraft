@@ -8,7 +8,7 @@
 use crate::stats::{self, TextStats};
 
 /// The kinds of issue the detectors report.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FindingKind {
     /// A sentence far past a comfortable length.
@@ -26,7 +26,7 @@ pub enum FindingKind {
 }
 
 /// One detected issue, anchored in its paragraph.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Finding {
     pub kind: FindingKind,
     /// Body block path of the paragraph (`[block]`, or `[block, row, cell, …]` in a table);
