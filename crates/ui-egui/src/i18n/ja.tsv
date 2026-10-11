@@ -1313,3 +1313,22 @@
 	Formatted	書式変更
 	Interface size:	表示サイズ:
 	Makes the ribbon, menus and dialogs larger or smaller, on top of your system's display scaling. Document zoom is separate.	リボン、メニュー、ダイアログを、システムの表示倍率に加えて拡大または縮小します。文書のズームは別に設定します。
+	Writing Insights	文章インサイト
+	Writing\nInsights	文章\nインサイト
+	Sentences	文
+	About {minutes} min to read, {speaking} min to read aloud	読むのに約{minutes}分、音読するのに約{speaking}分
+	Readability	読みやすさ
+	Not enough text for readability grades.	読みやすさの評価にはテキストが不足しています。
+	Sentence length	文の長さ
+	No sentences yet.	まだ文がありません。
+	Longest sentences	最長の文
+	Top words	頻出語
+	Issues	指摘
+	No issues found.	指摘は見つかりませんでした。
+	Long sentences	長い文
+	Passive voice	受動態
+	Wordy phrases	冗長な表現
+	Filler adverbs	余計な副詞
+	Repeated words	繰り返し語
+	Repeated sentence starts	文頭の繰り返し
+	Writing Insights Pane	文章インサイトペイン
