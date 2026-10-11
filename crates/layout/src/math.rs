@@ -7,6 +7,28 @@
 //! fixed proportions of the em.
 //!
 //! Coordinates: x right from the equation's left edge, y *up* from its baseline.
+//!
+//! 【中文标注·业务流程】公式排版引擎，流程分四步：
+//!   1. 输入：`wordcraft_doc::math` 的公式树（MNode，来自 OMML 解析或线性公式 parse_linear）。
+//!   2. 载入 OpenType MATH 表（固定 Cambria Math；无数学字体时按 em 比例取 fallback 常数）。
+//!   3. `layout_equation` 建立上下文 Ctx，按样式 St（正文/上下标/次上下标层级、display/
+//!      inline、cramped 紧缩）递归布局每个节点：分数 frac、根式 radical、上下标 attach、
+//!      N 元算子 op_atoms、定界符 delimiter、矩阵 matrix、方程组 eq_rows、长公式折行
+//!      wrapped、自动编号 numbered……每个参数槽位同时登记光标位置 Slot，供编辑器画
+//!      光标与命中测试。
+//!   4. 产出 MathLayout：绝对定位的绘制项 MItem（x 向右、y 自基线向上）、宽度与上下
+//!      伸展、光标槽位表。
+//! 要点一（stretchy 伸展）：MathVariants 表给每个可伸字符两张表——尺寸变体 variants 与
+//! 部件表 parts（GlyphPart：首端/尾端连接件长度、整字宽、是否延伸件）。stretch 先挑第一个
+//! 够高的尺寸变体；不够高且部件齐全时做"拼接"：固定件 + 延伸件×重复次数 − 相邻件最小
+//! 重叠（min_connector_overlap）≥ 目标高，多余量摊到各接缝作额外重叠（受连接件长度约束）。
+//! 要点二（基线与模式）：所有 y 坐标相对公式自身基线向上；display（独占一行）下大算子
+//! 放大居中于数学轴、上下限摆算子上下、分数用 Display 常数、可折行可编号；inline 模式
+//! 一律上下标侧旁、不折行。
+//! 要点三（自动编号）：display 行内顶层 `#` 切分公式与编号（numbered）；`#` 后为空时
+//! 用计数器 counter 自增生成 "(n)"，counter 由文档级公式计数经 ParaEnv.eq_number 传入。
+//! 要点四（字距）：原子按 TeX 八类查 SPACING 表（mu=1/18 em，负值只在正文层级生效）；
+//! 结构间距（分数/根式/上下标/上下限/横线等）全部读 MATH 表 MathConstants（Ctx::k）。
 
 use std::sync::Arc;
 
@@ -20,8 +42,11 @@ use wordcraft_fonts::math::{C, Construction, MathTable, glyph_bounds};
 use wordcraft_fonts::{FaceRef, FontDb};
 
 /// Something to draw.
+/// 【中文标注】公式产出的绘制项（交给渲染器）；坐标 x 向右、y 自基线向上。
 #[derive(Clone, Debug)]
 pub enum MItem {
+    // 【中文标注】一组字形：字体面、字号、颜色、是否合成粗体/斜体；glyphs 为
+    // (字形 id, x, y) 列表（y 为基线，向上为正）；text 保留原文本（供提取算子字符等）。
     Glyphs {
         face: FaceRef,
         size: f32,
@@ -33,6 +58,7 @@ pub enum MItem {
         text: String,
     },
     /// A filled rectangle; `y` is its bottom edge.
+    /// 【中文标注】实心矩形：分数线、根式横杠、顶/底线、边框等；y 为矩形底边。
     Rect {
         x: f32,
         y: f32,
@@ -40,6 +66,7 @@ pub enum MItem {
         h: f32,
         color: Rgb,
     },
+    // 【中文标注】线段：(x0,y0)-(x1,y1)，width 线宽，dotted 虚线（空槽位提示框用）。
     Line {
         x0: f32,
         y0: f32,
@@ -50,10 +77,12 @@ pub enum MItem {
         dotted: bool,
     },
     /// Drawn on screen only (placeholders for empty slots, the empty-equation hint).
+    /// 【中文标注】仅在屏幕编辑视图绘制、打印/导出时省略（空槽虚线框、空公式提示）。
     ScreenOnly(Box<MItem>),
 }
 
 impl MItem {
+    /// 【中文标注】平移绘制项 (dx, dy)：子盒并入父盒时由 Bx::put 调用。
     fn shift(&mut self, dx: f32, dy: f32) {
         match self {
             MItem::Glyphs { glyphs, .. } => {
@@ -79,30 +108,45 @@ impl MItem {
 
 /// A caret position inside an equation, where it is drawn: `x`, the baseline `y` (up from the
 /// equation's baseline) and the caret's extent above (`a`) and below (`d`) it.
+/// 【中文标注】公式内的一个光标落点：path 是从根到所在参数的 (节点序号, 参数序号) 路径，
+/// off 是参数内的字符偏移；x 为横坐标，y 为基线高度（相对公式基线，向上为正），a/d 为
+/// 光标向上/向下的延伸长度。编辑器据此画光标、做点击命中。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Slot {
+    /// 【中文标注】所在参数路径：(节点在其参数列表中的序号, 第几个参数)，逐层叠加。
     pub path: Vec<(usize, usize)>,
+    /// 【中文标注】参数内的字符偏移（0 = 参数最前）。
     pub off: usize,
+    /// 【中文标注】光标横坐标 x 与基线高度 y。
     pub x: f32,
     pub y: f32,
+    /// 【中文标注】光标在基线上方/下方的延伸量。
     pub a: f32,
     pub d: f32,
 }
 
 /// A laid-out equation.
+/// 【中文标注】排好的公式：宽度、相对基线的上下伸展（点）、绘制项与光标槽位表。
 #[derive(Clone, Debug, Default)]
 pub struct MathLayout {
+    /// 【中文标注】公式总宽度。
     pub width: f32,
     /// Extent above and below the baseline, points.
+    /// 【中文标注】基线上方/下方的伸展量（点），决定公式占用的行高；行内公式与文字
+    /// 共用基线，display 公式基线由行布局放在数学轴附近。
     pub ascent: f32,
     pub descent: f32,
+    /// 【中文标注】全部绘制项（字形组/矩形/线条），坐标已定位。
     pub items: Vec<MItem>,
     /// Every caret position, for drawing the caret and hit testing.
+    /// 【中文标注】所有光标槽位：画光标与点击命中用（slot()/hit()）。
     pub slots: Vec<Slot>,
 }
 
 impl MathLayout {
     /// Where the caret at (`path`, `off`) is drawn.
+    /// 【中文标注】查 (path, off) 处的光标槽位：先找精确匹配，找不到退而取同 path 下
+    /// 偏移最接近的槽位（例如点击落到组合字形中间时）。
     pub fn slot(&self, path: &[(usize, usize)], off: usize) -> Option<&Slot> {
         self.slots
             .iter()
@@ -110,11 +154,14 @@ impl MathLayout {
             .or_else(|| self.slots.iter().filter(|s| s.path == path).min_by_key(|s| s.off.abs_diff(off)))
     }
     /// The caret position nearest to (`x`, `y`) (y up from the baseline).
+    /// 【中文标注】点击命中：返回距 (x, y)（y 向上）最近的槽位，距离由 slot_dist 评估。
     pub fn hit(&self, x: f32, y: f32) -> Option<&Slot> {
         self.slots.iter().min_by(|a, b| slot_dist(a, x, y).total_cmp(&slot_dist(b, x, y)))
     }
 }
 
+/// 【中文标注】点到槽位的距离：横向差 + 纵向差（在槽位高度范围内记 0）×3；同样高度时
+/// 稍偏向更"小"（更内层）的参数，让点击优先落入嵌套深处。
 fn slot_dist(s: &Slot, x: f32, y: f32) -> f32 {
     let (top, bottom) = (s.y + s.a, s.y - s.d);
     let dy = if y > top {
@@ -130,6 +177,9 @@ fn slot_dist(s: &Slot, x: f32, y: f32) -> f32 {
 }
 
 /// Numbered rows (`#`) in an equation: they advance the automatic numbering.
+/// 【中文标注】统计本公式占用几个自动编号：仅 display 模式且顶层为方程组 EqArr 时，
+/// 数带 `#` 的行数。lib.rs 在段落排版前调用它，把段落内各公式的占用数累加进文档级
+/// 公式计数器（Ctx.eq_count），再作为 ParaEnv.eq_number 起始值传入 layout_equation。
 pub fn auto_numbers(math: &wordcraft_doc::math::Math, display: bool) -> u32 {
     if !display {
         return 0;
@@ -141,6 +191,9 @@ pub fn auto_numbers(math: &wordcraft_doc::math::Math, display: bool) -> u32 {
 }
 
 /// A row's equation and number parts around its top-level `#`, and the units before the `#`.
+/// 【中文标注】按行内首个非字面 `#` 把一行切成 (公式部分, 编号部分, 公式部分单位数)：
+/// `#` 前为公式、`#` 后为编号（编号为空即"自动编号"）；单位数供光标偏移换算。
+/// 整行没有 `#` 时返回 None。
 fn split_number(row: &[MNode]) -> Option<(Arg, Arg, usize)> {
     let mut eq = Vec::new();
     let mut units = 0usize;
@@ -178,6 +231,9 @@ fn split_number(row: &[MNode]) -> Option<(Arg, Arg, usize)> {
 /// `avail` is the width of the line (numbered display equations fill it, wider display equations
 /// wrap to it as `props` says); `counter` counts the document's automatic equation numbers so far
 /// and advances past this equation's.
+/// 【中文标注】公式排版总入口：`math` 为公式树（空且非线性时用 `linear` 文本现解析），
+/// `rc` 提供字号与颜色，`display` 区分行内/显示模式，`avail` 为行宽，`counter` 是文档级
+/// 自动编号计数器（本函数推进它，返回后调用方续用）。
 pub fn layout_equation(
     math: &wordcraft_doc::math::Math,
     linear: &str,
@@ -187,6 +243,7 @@ pub fn layout_equation(
     props: &MathProps,
     counter: &mut u32,
 ) -> MathLayout {
+    // 公式树为空且不是纯线性模式时，退回解析线性文本（用户直接键入的 a/b 形式等）。
     let parsed;
     let nodes: &Arg = if math.nodes.is_empty() && !math.linear {
         parsed = parse_linear(linear);
@@ -194,6 +251,7 @@ pub fn layout_equation(
     } else {
         &math.nodes
     };
+    // 载入数学字体与 OpenType MATH 表（固定 Cambria Math；无表时各间距退回 fallback 常数）。
     let (face, table) = wordcraft_fonts::math::resolve_math("Cambria Math");
     let color = match rc.color {
         TextColor::Rgb(c) => c,
@@ -211,14 +269,18 @@ pub fn layout_equation(
         path: Vec::new(),
         node_stack: Vec::new(),
     };
+    // 初始样式：0 级（正文尺寸）、是否 display、不紧缩。
     let st = St { level: 0, display, cramped: false, upright: false };
     let avail = if avail.is_finite() { avail.clamp(0.0, 1e5) } else { 0.0 };
+    // 分派：空公式→屏幕提示；display 且带 `#` 行→自动编号布局；display→可折行布局；
+    // 行内→普通排版（行内公式永不折行）。
     let b = match nodes.as_slice() {
         [] => cx.hint(st),
         [MNode::EqArr { rows }] if display && rows.iter().any(|r| split_number(r).is_some()) => cx.numbered(rows, st, avail, counter),
         _ if display => cx.wrapped(nodes, st, avail, props),
         _ => cx.arg(nodes, st, 0),
     };
+    // 没有高度的槽位（如纯算子之间的槽）给一个 em 高度兜底，保证光标可见可点。
     let mut slots = b.slots;
     let em = base;
     for s in &mut slots {
@@ -232,6 +294,9 @@ pub fn layout_equation(
 
 /// Layout style: script level (0 = text size, 1 = script, 2 = script-script), display or inline,
 /// cramped (superscripts lowered: inside radicals, denominators, subscripts).
+/// 【中文标注】排版样式：level 为上下标层级（0 正文 →1 上/下标 →2 上/下标的上/下标），
+/// 决定字号缩放（MATH 表 ScriptPercentScaleDown）；display=显示模式；cramped="紧缩"
+/// （根号内、分母、下标中，上标压低）；upright=字母默认正立（函数名 lim、sin 等）。
 #[derive(Clone, Copy, Debug)]
 struct St {
     level: u8,
@@ -242,19 +307,25 @@ struct St {
 }
 
 impl St {
+    /// 【中文标注】进入下一层上下标（最高 2 级）；display 一律取消——上/下标内不摆上下限。
     fn script(self) -> St {
         St { level: (self.level + 1).min(2), display: false, ..self }
     }
+    /// 【中文标注】紧缩样式：上标按 Cramped 常数压低。
     fn cramp(self) -> St {
         St { cramped: true, ..self }
     }
     /// Numerator / denominator style.
+    /// 【中文标注】分数分子/分母的样式：display 分数取正文尺寸（分子不缩），行内分数
+    /// 按上下标尺寸缩小。
     fn frac(self) -> St {
         if self.display { St { display: false, ..self } } else { self.script() }
     }
 }
 
 /// TeX atom classes (spacing).
+/// 【中文标注】TeX 原子类别，决定原子间字距：Ord 普通、Op 大算子、Bin 二元运算、
+/// Rel 关系符、Open/Close 括号、Punct 标点、Inner（如分数）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum Cls {
     #[default]
@@ -275,6 +346,9 @@ impl Cls {
 }
 
 /// Inter-atom space in mu (1/18 em): TeX's table; negative = only outside scripts.
+/// 【中文标注】原子间字距表（单位 mu = 1/18 em），照搬 TeX 的 8×8 矩阵；负值表示
+/// 只在正文层级（level=0）生效、上下标中不加（见 spacing_mu）；排版时按当前 em
+/// 换算成点。
 const SPACING: [[i8; 8]; 8] = [
     // Ord  Op  Bin  Rel Open Close Punct Inner
     [0, 3, -4, -5, 0, 0, 0, -3],     // Ord
@@ -287,41 +361,59 @@ const SPACING: [[i8; 8]; 8] = [
     [-3, 3, -4, -5, -3, 0, -3, -3],  // Inner
 ];
 
+/// 【中文标注】查 (左类别, 右类别) 的字距（mu）：上下标层级中负值视为 0（不缩格），
+/// 返回值由调用方乘 em/18 换算为点。
 fn spacing_mu(l: Cls, r: Cls, st: St) -> f32 {
     let v = SPACING.get(l.idx()).and_then(|row| row.get(r.idx())).copied().unwrap_or(0);
     if v < 0 && st.level > 0 { 0.0 } else { v.unsigned_abs() as f32 }
 }
 
 /// A box under construction.
+/// 【中文标注】布局中的"盒子"：递归布局的基本单元。w/a/d 为宽度与相对自身基线的
+/// 上/下伸展；items 为内部绘制项；first/last 记两端原子类别（供相邻原子算字距）。
 #[derive(Clone, Debug, Default)]
 struct Bx {
+    /// 【中文标注】宽度、基线上方/下方伸展（a 向上、d 向下为正）。
     w: f32,
     a: f32,
     d: f32,
+    /// 【中文标注】盒内绘制项（坐标相对盒子自身基线）。
     items: Vec<MItem>,
     /// Italic correction after the box (superscripts move right by it).
+    /// 【中文标注】斜体修正量（MATH 表 ItalicsCorrections）：后接上标时右移它，
+    /// 避免上标撞进斜体字的甩尾。
     ic: f32,
+    /// 【中文标注】盒子首/末原子的类别（相邻盒间字距查询用）。
     first: Cls,
     last: Cls,
     /// The box is one glyph: (face, glyph, top-accent attachment x).
+    /// 【中文标注】盒子恰为单字形时记录 (字体面, 字形 id, 顶部重音附着点 x)：供重音
+    /// 对位，以及"单字符底"上下标不做整体下沉的特例判断。
     glyph: Option<(FaceRef, u32, f32)>,
     /// Takes no part in inter-atom spacing (spaces).
+    /// 【中文标注】透明盒：空格、函数应用符等零宽占位，不参与原子间字距。
     transparent: bool,
     /// Caret positions inside, relative to the box.
+    /// 【中文标注】盒内光标槽位（相对盒子）。
     slots: Vec<Slot>,
     /// Text atoms: x of each character boundary (one more than the characters).
+    /// 【中文标注】文本原子的各字符边界 x（比字符数多一个），用于生成逐字符光标槽位。
     cuts: Vec<f32>,
     /// A manual line break before this atom (`m:brk`; the value is its `m:alnAt`).
+    /// 【中文标注】此原子前有手动断行（m:brk），值为 m:alnAt 对齐位置。
     brk: Option<u8>,
 }
 
 impl Bx {
+    /// 【中文标注】把盒子两端类别都设为 c（单原子盒）。
     fn cls(mut self, c: Cls) -> Bx {
         self.first = c;
         self.last = c;
         self
     }
     /// Draw `o` at (dx, dy) into this box (extents grow; width is the caller's business).
+    /// 【中文标注】把子盒 o 平移 (dx, dy)（dy 向上为正）后并入：上/下伸展取并集，
+    /// 绘制项与光标槽位随之平移；宽度由调用方维护。
     fn put(&mut self, o: Bx, dx: f32, dy: f32) {
         self.a = self.a.max(o.a + dy);
         self.d = self.d.max(o.d - dy);
@@ -347,8 +439,13 @@ impl Bx {
     }
 }
 
+/// 【中文标注】一次公式排版的共享上下文：字体面、MATH 表、字体 units-per-em、基准字号、
+/// 颜色、正文字体；nodes 为已排节点计数（防失控输入），path 为当前参数路径（光标槽位
+/// 归属用），node_stack 记当前节点在各层参数中的序号（构造 path 用）。
 struct Ctx {
     face: FaceRef,
+    /// 【中文标注】OpenType MATH 表（MathConstants/ItalicsCorrections/TopAccentAttachments/
+    /// MathVariants 等）；无数学字体时为 None，各间距退回 em 比例常数。
     t: Option<Arc<MathTable>>,
     upem: f32,
     base: f32,
@@ -362,9 +459,13 @@ struct Ctx {
     node_stack: Vec<usize>,
 }
 
+/// 【中文标注】单次公式排版可处理的节点数上限（防恶意/失控输入）。
 const MAX_NODES: usize = 200_000;
 
 /// Constants as fractions of the em when there's no `MATH` table.
+/// 【中文标注】MATH 表缺省时的 MathConstants 兜底值（em 的比例）：涵盖上下标升降、
+/// 上下限间距、分数上下移与分式线粗细、根式间隙与度数 Kern、顶/底线与边框的间距线粗
+/// 等；与 Ctx::k 配合——有表按表值（字体单位换算点数），无表按此处比例乘字号。
 fn fallback(c: C) -> f32 {
     match c {
         C::MathLeading => 0.15,
@@ -422,6 +523,8 @@ fn fallback(c: C) -> f32 {
 }
 
 /// Characters drawn as operators with their own spacing class.
+/// 【中文标注】查字符的数学类别（wordcraft_doc::math::math_class 的 Unicode Math_Class
+/// 表）并映射到本文件的 Cls；非 Ord 类字符自成原子、按类别取字距。
 fn class_of(c: char) -> Cls {
     match wordcraft_doc::math::math_class(c) {
         MClass::Ord => Cls::Ord,
@@ -436,6 +539,8 @@ fn class_of(c: char) -> Cls {
 }
 
 /// Accents drawn across the whole base (stretched horizontally).
+/// 【中文标注】宽重音集合（矢量箭头、上/下花括号线、上/下方括号等）：底足够宽时横向
+/// 伸展（stretch_h）铺满整个底。
 fn wide_accent(c: char) -> bool {
     matches!(
         c,
@@ -457,6 +562,8 @@ fn wide_accent(c: char) -> bool {
 }
 
 impl Ctx {
+    /// 【中文标注】上下标层级字号比例：读 MATH 表 ScriptPercentScaleDown /
+    /// ScriptScriptPercentScaleDown（非法值按 70%/50% 兜底，钳制在合理区间）。
     fn scale(&self, level: u8) -> f32 {
         let (s1, s2) = match &self.t {
             Some(t) => (t.script_percent, t.script_script_percent),
@@ -474,6 +581,9 @@ impl Ctx {
         self.base * self.scale(st.level)
     }
     /// A constant in points at the style's size.
+    /// 【中文标注】取一个 MathConstants 度量并换算为当前样式的点数：有 MATH 表按
+    /// 字体单位 / upem × 字号；无表用 fallback 的 em 比例。全部结构间距（分数/根式/
+    /// 上下标位移/上下限/横线线粗等）统一经此读取，保证跟随字体而非写死。
     fn k(&self, c: C, st: St) -> f32 {
         let size = self.size(st);
         match &self.t {
@@ -481,6 +591,8 @@ impl Ctx {
             None => fallback(c) * size,
         }
     }
+    /// 【中文标注】数学轴高度（AxisHeight）：=、+、分式线等沿它对齐；分式线位置、
+    /// 大算子居中、矩阵/方程组垂直居中都以此为基准。
     fn axis(&self, st: St) -> f32 {
         self.k(C::AxisHeight, st)
     }
@@ -488,6 +600,8 @@ impl Ctx {
         self.size(st)
     }
 
+    /// 【中文标注】排一个参数（节点序列）：先拆成原子（row），再按字距拼合（compose），
+    /// 最后 finalize 把本参数的光标槽位撑到参数高度。
     fn arg(&mut self, a: &[MNode], st: St, depth: usize) -> Bx {
         let atoms = self.row(a, st, depth, 0);
         let em = self.em(st);
@@ -497,6 +611,8 @@ impl Ctx {
     }
 
     /// Child argument `c` of the node being laid out; an empty one shows a placeholder.
+    /// 【中文标注】排当前节点的第 c 个子参数：把 (当前节点序号, c) 压入光标路径后递归；
+    /// 空参数显示屏幕占位虚线框（placeholder）。
     fn sub(&mut self, c: usize, a: &[MNode], st: St, depth: usize) -> Bx {
         let me = self.node_stack.last().copied().unwrap_or(0);
         self.path.push((me, c));
@@ -506,6 +622,7 @@ impl Ctx {
     }
 
     /// The dotted box an empty argument shows on screen.
+    /// 【中文标注】空参数的屏幕占位：虚线小方框（ScreenOnly，不打印），并登记光标槽位。
     fn placeholder(&mut self, st: St) -> Bx {
         let em = self.em(st);
         let (w, a, d, pad) = (em * 0.56, em * 0.7, em * 0.06, em * 0.05);
@@ -523,6 +640,7 @@ impl Ctx {
     }
 
     /// An empty equation: a grey prompt (screen only).
+    /// 【中文标注】空公式提示："Type an equation" 灰字，仅屏幕显示，打印/导出时空白。
     fn hint(&mut self, st: St) -> Bx {
         let size = self.size(st);
         let rs = wordcraft_fonts::word::resolve(&self.text_font, false, false);
@@ -538,6 +656,9 @@ impl Ctx {
 
     /// The atoms of a row with their alignment segment (`&` starts a new segment). `u0`: the
     /// unit offset of the row's first node (for caret slots).
+    /// 【中文标注】把一行节点拆成原子列表 (原子, 对齐段号)：& 开启新对齐段（方程组按
+    /// 段对齐）；每个原子登记光标槽位（Run 逐字符、结构节点首尾各一）；u 累计字符单位
+    /// 偏移；depth 超限或节点数超 MAX_NODES 即停（防失控输入）。
     fn row(&mut self, a: &[MNode], st: St, depth: usize, u0: usize) -> Vec<(Bx, usize)> {
         let mut out = Vec::new();
         if depth > MAX_DEPTH {
@@ -550,6 +671,7 @@ impl Ctx {
             if self.nodes > MAX_NODES {
                 break;
             }
+            // path：当前参数路径，原子用它登记光标槽位。
             let path = self.path.clone();
             match n {
                 MNode::Run(r) => {
@@ -600,7 +722,11 @@ impl Ctx {
     }
 
     /// Glyph run for `text` in `face` at `size`: a box with ink extents.
+    /// 【中文标注】整形一段文本为字形盒：level>0 时打开 ssty 特性取 MATH 表的数学
+    /// 上/下标变体字形；按墨迹边界（glyph_bounds）累计盒子的上/下伸展；记录每个字符
+    /// 边界的 x（cuts）供光标槽位；末字形查斜体修正；单字形时记录顶部重音附着点。
     fn glyphs(&self, face: FaceRef, text: &str, size: f32, level: u8, color: Rgb, synth: (bool, bool)) -> Bx {
+        // ssty（math size variant）特性：1=上标尺寸变体，2=下标尺寸变体。
         let feats = if level > 0 { vec![wordcraft_fonts::feature_value(b"ssty", level as u32)] } else { Vec::new() };
         let shaped = wordcraft_fonts::shape(&face, text, &feats, |c| c);
         let k = size / face.upem.max(1.0) as f32;
@@ -659,6 +785,8 @@ impl Ctx {
     }
 
     /// A single glyph by id (size variants, assembly parts).
+    /// 【中文标注】按字形 id 直接建盒（尺寸变体与拼接部件共用）：宽度取 advance，
+    /// 伸展取墨迹边界，斜体修正查 MATH 表。
     fn glyph_id(&self, gid: u32, size: f32, color: Rgb) -> Bx {
         let face = self.face;
         let k = size / face.upem.max(1.0) as f32;
